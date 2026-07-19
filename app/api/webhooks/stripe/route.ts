@@ -1,41 +1,55 @@
+export const dynamic = "force-dynamic";
+
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: "2024-12-18.acacia", // Use the latest API version
-});
-
-const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET!;
+// Do NOT initialize Stripe out here globally anymore!
 
 export async function POST(req: Request) {
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET!;
+  
+  // 1. Safety check for key availability before creation
+  if (!process.env.STRIPE_SECRET_KEY || !webhookSecret) {
+    console.error("Missing Stripe Environment Variables");
+    return new NextResponse("Server Configuration Error", { status: 500 });
+  }
+
+  // 2. Initialize Stripe safely inside the runtime function scope
+  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+    apiVersion: "2024-12-18.acacia",
+  });
+
   const body = await req.text();
-  const signature = (await headers()).get("stripe-signature") as string;
+  const headerList = await headers();
+  const signature = headerList.get("stripe-signature");
+
+  if (!signature) {
+    return new NextResponse("Missing stripe-signature header", { status: 400 });
+  }
 
   let event: Stripe.Event;
 
-  try {
+    try {
     event = stripe.webhooks.constructEvent(body, signature, webhookSecret);
-  } catch (err: any) {
-    console.error(`Webhook Error: ${err.message}`);
-    return new NextResponse(`Webhook Error: ${err.message}`, { status: 400 });
+  } catch (err) { // Removed ": any"
+    const errorMessage = err instanceof Error ? err.message : "Unknown error";
+    console.error(`Webhook Error: ${errorMessage}`);
+    return new NextResponse(`Webhook Error: ${errorMessage}`, { status: 400 });
   }
+
 
   // Handle specific events
   switch (event.type) {
     case "customer.subscription.created":
-    case "customer.subscription.updated":
+    case "customer.subscription.updated": {
       const subscription = event.data.object as Stripe.Subscription;
-      // LOGIC: Update your database with new MRR and user status
-      // await db.subscription.upsert({ ... })
       console.log(`Subscription ${subscription.id} updated.`);
       break;
-
+    }
     case "customer.subscription.deleted":
-      // LOGIC: Handle Churn - mark user as inactive
       console.log(`Subscription cancelled.`);
       break;
-
     default:
       console.log(`Unhandled event type ${event.type}`);
   }
